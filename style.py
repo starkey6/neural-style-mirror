@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
 from __future__ import print_function, division, absolute_import
 
+from conf import settings
+
 import glob
 import os
-import sys
 
 import numpy as np
 from PIL import Image
 from chainer import cuda, Variable, serializers
 from net import FastStyleNet
 
-import settings
 
 class Style(object):
     def __init__(self, model_path):
@@ -45,7 +45,7 @@ class Style(object):
         xp = np if settings.GPU < 0 else cuda.cupy
 
         image = xp.asarray(image.convert('RGB'), dtype=xp.float32).transpose(2, 0, 1)
-        image = image.reshape((1,) + image.shape)
+        image = image.reshape((1, ) + image.shape)
         x = Variable(image)
 
         y = model(x)
@@ -54,8 +54,26 @@ class Style(object):
         result = result.transpose(0, 2, 3, 1)
         result = result.reshape((result.shape[1:]))
         result = np.uint8(result)
-        result = result.copy() # ensure contiguous data in memory
+        result = result.copy()  # ensure contiguous data in memory
         return result
+
 
 def load_styles():
     return [Style(file) for file in glob.glob(os.path.join(settings.MODEL_DIR, '*.model'))]
+
+
+if __name__ == '__main__':
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Stylize an image file')
+    parser.add_argument('input')
+    parser.add_argument('output')
+    parser.add_argument('--style-index', '-s', default=0, type=int, help='style index')
+    args = parser.parse_args()
+
+    styles = load_styles()
+    style = styles[args.style_index]
+    img = Image.open(args.input)
+    npout = style.stylize(img)
+    out = Image.fromarray(npout)
+    out.save(args.output)

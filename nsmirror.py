@@ -1,38 +1,53 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-from __future__ import print_function, division, absolute_import
+from __future__ import absolute_import, division, print_function
 
-import time
-import os
+import argparse
 import sys
+from functools import partial
 from pydoc import locate
 
-import numpy as np
-
 import cv2
+from PIL import Image
+
+from qtpy.QtCore import QObject, Qt, QThread, Signal, Slot
+from qtpy.QtGui import QImage, QKeySequence, QPixmap, QTransform
+from qtpy.QtWidgets import (QApplication, QButtonGroup, QComboBox, QGridLayout, QHBoxLayout, QLabel, QMessageBox,
+                            QPushButton, QRadioButton, QShortcut, QStackedLayout, QVBoxLayout, QWidget)
+
+from six import string_types
+from six.moves import range
+
+from conf import settings
+from style import load_styles
+
 # location for these differ from opencv 2 vs 3
-try: # 2
+try:  # 2
     CV_CAP_PROP_FRAME_WIDTH = cv2.cv.CV_CAP_PROP_FRAME_WIDTH
     CV_CAP_PROP_FRAME_HEIGHT = cv2.cv.CV_CAP_PROP_FRAME_HEIGHT
     CV_BGR2RGB = cv2.cv.CV_BGR2RGB
-except AttributeError: # 3
+except AttributeError:  # 3
     CV_CAP_PROP_FRAME_WIDTH = cv2.CAP_PROP_FRAME_WIDTH
     CV_CAP_PROP_FRAME_HEIGHT = cv2.CAP_PROP_FRAME_HEIGHT
     CV_BGR2RGB = cv2.COLOR_BGR2RGB
 
-try:
-    from PySide.QtCore import *
-    from PySide.QtGui import *
-except ImportError:
-    from PyQt4.QtGui import *
-    from PyQt4.QtCore import *
-    Signal = pyqtSignal
-    Slot = pyqtSlot
 
-from PIL import Image
+class StyledCapture(object):
+    def __init__(self, image, style_name):
+        self._image = image
+        self._style_name = style_name
 
-import settings
-from style import Style, load_styles
+    @property
+    def image(self):
+        return self._image
+
+    @property
+    def style_name(self):
+        return self._style_name
+
+    def copy(self):
+        return StyledCapture(self.image.copy(), self.style_name)
+
 
 class FrameGrabber(QObject):
     last_frame_signal = Signal(object)
@@ -47,6 +62,11 @@ class FrameGrabber(QObject):
         """Initialize camera."""
         self.capture = cv2.VideoCapture(settings.WEBCAM)
 
+    def teardown_camera(self):
+        """Release camera."""
+        if self.capture:
+            self.capture.release()
+
     def set_camera_size(self, size_str):
         width, height = map(int, size_str.split('x'))
         self.capture.set(CV_CAP_PROP_FRAME_WIDTH, width)
@@ -59,7 +79,7 @@ class FrameGrabber(QObject):
             frame = cv2.cvtColor(frame, CV_BGR2RGB)
             last_frame = Image.fromarray(frame)
             self.last_frame_signal.emit(last_frame)
-            #check for stop/changes
+            # check for stop/changes
             QApplication.processEvents()
 
     @Slot(str)
@@ -69,6 +89,8 @@ class FrameGrabber(QObject):
     @Slot()
     def stop_work(self):
         self.active = False
+        self.teardown_camera()
+
 
 class ImageProcessor(QObject):
     image_signal = Signal(object)
@@ -85,17 +107,17 @@ class ImageProcessor(QObject):
         while self.active:
             if self.last_frame:
                 image_array = self.style.stylize(self.last_frame)
-                image = QImage(image_array.data, image_array.shape[1], image_array.shape[0], 
-                               image_array.strides[0], QImage.Format_RGB888)
+                image = QImage(image_array.data, image_array.shape[1], image_array.shape[0], image_array.strides[0],
+                               QImage.Format_RGB888)
 
                 rotating = QTransform()
-                rotating.scale(-1, 1) # mirror
+                rotating.scale(-1, 1)  # mirror
                 rotating.rotate(settings.ROTATE_IMAGE)
                 image = image.transformed(rotating)
 
-                self.image_signal.emit(image)
+                self.image_signal.emit(StyledCapture(image, self.style.name))
 
-            #check for stop/changes
+            # check for stop/changes
             QApplication.processEvents()
 
     @Slot()
@@ -112,6 +134,7 @@ class ImageProcessor(QObject):
     @Slot(object)
     def change_last_frame(self, last_frame):
         self.last_frame = last_frame
+
 
 class ViewBase(QWidget):
     style_changed = Signal(object)
@@ -166,6 +189,7 @@ class ViewBase(QWidget):
         pixmap_scaled = pixmap.scaled(self.image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
         self.image_label.setPixmap(pixmap_scaled)
 
+
 class LandscapeView(ViewBase):
     def setup_ui(self):
         """Initialize widgets."""
@@ -173,32 +197,30 @@ class LandscapeView(ViewBase):
         info_label.setText("Hit enter to capture your image!")
 
         self.image_label = QLabel()
-        self.image_label.setMinimumSize(320,240)
+        self.image_label.setMinimumSize(320, 240)
         self.image_label.setScaledContents(True)
 
         button_layout = QVBoxLayout()
         button_layout.setAlignment(Qt.AlignLeft)
         self.style_buttons = [
-            QRadioButton(settings.STYLE_SHORTCUTS[i] + ". " + style.name
-                         if i < len(settings.STYLE_SHORTCUTS) else style.name) 
+            QRadioButton(settings.STYLE_SHORTCUTS[i] + ". " +
+                         style.name if i < len(settings.STYLE_SHORTCUTS) else style.name)
             for i, style in enumerate(self.styles)
-            ]
+        ]
 
         self.style_buttons[self.styles.index(self.selected_style)].setChecked(True)
         self.style_button_group = QButtonGroup()
         for i, btn in enumerate(self.style_buttons):
             button_layout.addWidget(btn)
             self.style_button_group.addButton(btn, i)
-            btn.clicked.connect(lambda x=i: self.style_button_clicked(self.styles[x]))
+            btn.clicked.connect(partial(lambda style: self.style_button_clicked(style), self.styles[i]))
 
         button_layout.addStretch(1)
 
         ctrl_layout = QHBoxLayout()
         if not settings.KIOSK:
             fullscreen_button = QPushButton('[ ]')
-            fullscreen_button.setMaximumWidth(
-                fullscreen_button.fontMetrics().boundingRect('[ ]').width() + 10
-                )
+            fullscreen_button.setMaximumWidth(fullscreen_button.fontMetrics().boundingRect('[ ]').width() + 10)
             fullscreen_button.clicked.connect(self.toggle_fullscreen)
             ctrl_layout.addWidget(fullscreen_button)
         ctrl_layout.addStretch(1)
@@ -221,6 +243,7 @@ class LandscapeView(ViewBase):
         main_layout.addLayout(sub_layout)
         self.setLayout(main_layout)
 
+
 class PortraitView(ViewBase):
     def setup_ui(self):
         """Initialize widgets."""
@@ -233,23 +256,21 @@ class PortraitView(ViewBase):
 
         button_layout = QGridLayout()
         self.style_buttons = [
-            QRadioButton(settings.STYLE_SHORTCUTS[i] + ". " + style.name 
-                         if i < len(settings.STYLE_SHORTCUTS) else style.name) 
+            QRadioButton(settings.STYLE_SHORTCUTS[i] + ". " +
+                         style.name if i < len(settings.STYLE_SHORTCUTS) else style.name)
             for i, style in enumerate(self.styles)
-            ]
+        ]
         self.style_buttons[self.styles.index(self.selected_style)].setChecked(True)
         self.style_button_group = QButtonGroup()
         for i, btn in enumerate(self.style_buttons):
             button_layout.addWidget(btn, i // 3, i % 3)
             self.style_button_group.addButton(btn, i)
-            btn.clicked.connect(lambda x=i: self.style_button_clicked(self.styles[x]))
+            btn.clicked.connect(partial(lambda style: self.style_button_clicked(style), self.styles[i]))
 
         ctrl_layout = QHBoxLayout()
         if not settings.KIOSK:
             fullscreen_button = QPushButton('[ ]')
-            fullscreen_button.setMaximumWidth(
-                fullscreen_button.fontMetrics().boundingRect('[ ]').width() + 10
-                )
+            fullscreen_button.setMaximumWidth(fullscreen_button.fontMetrics().boundingRect('[ ]').width() + 10)
             fullscreen_button.clicked.connect(self.toggle_fullscreen)
             ctrl_layout.addWidget(fullscreen_button)
         ctrl_layout.addStretch(1)
@@ -269,6 +290,7 @@ class PortraitView(ViewBase):
         main_layout.addLayout(button_layout)
         self.setLayout(main_layout)
 
+
 class MainApp(QWidget):
     LANDSCAPE = 0
     PORTRAIT = 1
@@ -282,9 +304,9 @@ class MainApp(QWidget):
         QWidget.__init__(self)
 
         self.styles = load_styles()
-        self.image = QImage(256, 256, QImage.Format_RGB888) # placeholder
+        self.image = StyledCapture(QImage(256, 256, QImage.Format_RGB888), '')  # placeholder
         self.freeze = None
-        if isinstance(settings.CAPTURE_HANDLER, basestring):
+        if isinstance(settings.CAPTURE_HANDLER, string_types):
             self.capture_handler = locate(settings.CAPTURE_HANDLER)
         else:
             self.capture_handler = settings.CAPTURE_HANDLER
@@ -292,7 +314,7 @@ class MainApp(QWidget):
 
         self.frame_grabber = FrameGrabber(settings.SIZES[0])
         self.frame_thread = QThread()
-        #self.frame_grabber.image_signal.connect(self.display_frame)
+        # self.frame_grabber.image_signal.connect(self.display_frame)
         self.frame_grabber.last_frame_signal.connect(self.last_frame)
         self.frame_grabber.moveToThread(self.frame_thread)
         self.frame_thread.started.connect(self.frame_grabber.grab)
@@ -319,12 +341,13 @@ class MainApp(QWidget):
 
     def setup_ui(self):
         """Initialize widgets."""
+
         def switch_style(i):
             view = self.landscape_view if self.view_mode == MainApp.LANDSCAPE else self.portrait_view
             self.style_changed.emit(self.styles[i])
             view.selected_style = self.styles[i]
 
-        for i in xrange(min(len(self.styles), len(settings.STYLE_SHORTCUTS))):
+        for i in range(min(len(self.styles), len(settings.STYLE_SHORTCUTS))):
             QShortcut(QKeySequence(settings.STYLE_SHORTCUTS[i]), self, lambda x=i: switch_style(x))
 
         self.landscape_view = LandscapeView(self.styles)
@@ -348,9 +371,8 @@ class MainApp(QWidget):
                            'font-style: normal;'
                            'font-size: 12pt;'
                            'font-weight: bold;'
-                           'color:white;'
-                           )
-        self.setWindowTitle('Neural Style Mirror')
+                           'color:white;')
+        self.setWindowTitle('Stylize')
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape and not settings.KIOSK:
@@ -366,9 +388,9 @@ class MainApp(QWidget):
         self.image = image
         if not self.freeze:
             if self.view_mode == MainApp.LANDSCAPE:
-                self.landscape_view.set_image(self.image)
+                self.landscape_view.set_image(self.image.image)
             else:
-                self.portrait_view.set_image(self.image)
+                self.portrait_view.set_image(self.image.image)
 
     def resizeEvent(self, event):
         super(MainApp, self).resizeEvent(event)
@@ -397,10 +419,10 @@ class MainApp(QWidget):
         self.quality_changed.emit(quality)
 
     def image_capture(self):
-        self.freeze = self.image.copy() # prevent background update
+        self.freeze = self.image.copy()  # prevent background update
         try:
             self.capture_handler(self, self.freeze)
-        except:
+        except Exception:
             msg = QMessageBox(self)
             msg.setIcon(QMessageBox.Critical)
             msg.setText('Error during capture.')
@@ -409,7 +431,18 @@ class MainApp(QWidget):
 
         self.freeze = None
 
+
 if __name__ == '__main__':
+    # allow a few things to be set from command line
+    parser = argparse.ArgumentParser(description='Neural Style Mirror')
+    parser.add_argument('--kiosk', '-k', action='store_true', help='Open in kiosk mode.')
+    parser.add_argument('--rotation', '-r', default=0, type=int, help='Degrees to rotate image')
+    args = parser.parse_args()
+
+    settings.KIOSK = args.kiosk
+    settings.ROTATE_IMAGE = args.rotation
+
+    # kick off Qt App
     app = QApplication(sys.argv)
     win = MainApp()
     if settings.KIOSK:
