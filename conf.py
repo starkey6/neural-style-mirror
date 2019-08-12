@@ -9,7 +9,7 @@ import sys
 class Settings(object):
     """Program Settings"""
     # gpu to use, if set to -1 CPU is used
-    GPU = -1  # 0 # -1: CPU
+    GPU = 0  # 0 # -1: CPU
 
     # webcam to use
     WEBCAM = 0

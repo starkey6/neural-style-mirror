@@ -35,3 +35,24 @@ The artistic styling methodology using feed-forward convolutional neural network
 This demo utilizes Yusuke Tomoto's [chainer-fast-neuralstyle](https://github.com/yusuketomoto/chainer-fast-neuralstyle) implementation of the artistic style transfer algorithm.
 
 Initial inspiration drawn from Gene Kogan's [CubistMirror](https://github.com/genekogan/CubistMirror) installation on display at the [alt-AI](http://www.alt-ai.net) conference.
+
+# Packages
+
+Ubuntu 18.04 ships with a number of python packages that can be used to satisfy the requirements for the neural style mirror program:
+
+python3-filelock
+python3-six
+python3-protobuf
+python3-pyside.qtgui
+python3-qtpy
+
+Chainer 6.1.0 from pip3
+
+Installing collected packages: filelock, numpy, six, setuptools, protobuf, typing, typing-extensions, chainer
+
+Successfully built chainer
+Installing collected packages: filelock, numpy, six, setuptools, protobuf, typing, typing-extensions, chainer
+Successfully installed chainer-6.1.0 filelock-3.0.12 numpy-1.16.4 protobuf-3.7.1 setuptools-41.0.1 six-1.12.0 typing-3.6.6 typing-extensions-3.6.6
+
+ pip3 install --user cupy-cuda100
+
